@@ -14,7 +14,7 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-BASE_URL = "https://stockanalysis.com/stocks"
+BASE_URL = "https://stockanalysis.com"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -160,24 +160,48 @@ def _fetch_page(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# URL construction
+# ---------------------------------------------------------------------------
+
+def _build_urls(slug: str) -> dict[str, str]:
+    """
+    Build the 4 financial page URLs from a StockAnalysis slug.
+
+    US stocks (no slash):   slug="MSFT"     → /stocks/MSFT/financials/...
+    International (slash):  slug="tsx/CSU"   → /quote/tsx/CSU/financials/...
+    """
+    if "/" in slug:
+        # International: /quote/{exchange}/{ticker}/
+        base = f"{BASE_URL}/quote/{slug}"
+    else:
+        # US stock: /stocks/{ticker}/
+        base = f"{BASE_URL}/stocks/{slug}"
+
+    return {
+        "income": f"{base}/financials/",
+        "balance": f"{base}/financials/balance-sheet/",
+        "cashflow": f"{base}/financials/cash-flow-statement/",
+        "ratios": f"{base}/financials/ratios/",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_stockanalysis(symbol: str) -> dict:
+def fetch_stockanalysis(slug: str) -> dict:
     """
     Scrape financial data from stockanalysis.com for a given ticker.
+
+    Args:
+        slug: StockAnalysis URL slug. US stocks: "MSFT".
+              International: "tsx/CSU", "ams/ADYEN", "sto/EVO", etc.
 
     Fetches 4 pages: income statement, balance sheet, cash flow, ratios.
     Returns data in the common format compatible with compute_all_metrics().
     """
-    symbol_lower = symbol.lower()
-    pages = {
-        "income": f"{BASE_URL}/{symbol_lower}/financials/",
-        "balance": f"{BASE_URL}/{symbol_lower}/financials/balance-sheet/",
-        "cashflow": f"{BASE_URL}/{symbol_lower}/financials/cash-flow-statement/",
-        "ratios": f"{BASE_URL}/{symbol_lower}/financials/ratios/",
-    }
+    pages = _build_urls(slug)
 
     raw_tables = {}
     for key, url in pages.items():
@@ -187,7 +211,7 @@ def fetch_stockanalysis(symbol: str) -> dict:
 
     if not raw_tables.get("income"):
         raise ValueError(
-            f"No financial data found for ticker '{symbol}' on StockAnalysis.com"
+            f"No financial data found for '{slug}' on StockAnalysis.com"
         )
 
     # Convert to DataFrames (rows=years, columns=financial line items)
@@ -205,6 +229,9 @@ def fetch_stockanalysis(symbol: str) -> dict:
         if sorted_years:
             info["currentPrice"] = prices[sorted_years[0]]
 
+    # Derive the display symbol from the slug
+    display_symbol = slug.split("/")[-1].upper() if "/" in slug else slug.upper()
+
     return {
         "income": income_df,
         "balance": balance_df,
@@ -212,6 +239,6 @@ def fetch_stockanalysis(symbol: str) -> dict:
         "ratios": ratios_df,
         "info": info,
         "history": pd.DataFrame(),  # Not available from scraping
-        "symbol": symbol.upper(),
+        "symbol": display_symbol,
         "source": "stockanalysis",
     }

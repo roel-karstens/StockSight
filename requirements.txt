@@ -4,3 +4,4 @@ yfinance>=0.2.30
 pandas>=2.0
 beautifulsoup4>=4.12
 requests>=2.31
+streamlit-searchbox>=0.1.24
