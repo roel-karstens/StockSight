@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 
 from data.fetcher import fetch_financials
+from data.scraper import fetch_stockanalysis
 from data.metrics import compute_all_metrics
 from ui.charts import build_all_charts
 from ui.indicators import (
@@ -85,12 +86,25 @@ with st.sidebar:
 
     st.divider()
 
-    # Time range
-    years = st.slider("Years of history", min_value=3, max_value=10, value=5)
-    st.caption("ℹ️ Note: Yahoo Finance typically provides 3–4 years of annual data. More years may be available for some tickers.")
+    # Data source selector
+    data_source = st.radio(
+        "Data Source",
+        options=["StockAnalysis.com", "Yahoo Finance"],
+        index=0,
+        help="StockAnalysis.com provides ~6 years of data with pre-calculated ratios. Yahoo Finance provides 3–4 years of raw data.",
+    )
 
     st.divider()
-    st.caption("Data source: Yahoo Finance via yfinance")
+
+    # Time range
+    years = st.slider("Years of history", min_value=3, max_value=10, value=5)
+    if data_source == "Yahoo Finance":
+        st.caption("ℹ️ Note: Yahoo Finance typically provides 3–4 years of annual data.")
+    else:
+        st.caption("ℹ️ StockAnalysis.com typically provides up to 6 years of annual data.")
+
+    st.divider()
+    st.caption(f"Data source: {data_source}")
     st.caption("Thresholds are configurable in `ui/indicators.py`")
 
 # ---------------------------------------------------------------------------
@@ -111,10 +125,13 @@ if not st.session_state.tickers:
 all_data: dict[str, pd.DataFrame] = {}
 errors: list[str] = []
 
-with st.spinner("Fetching financial data..."):
+with st.spinner(f"Fetching financial data from {data_source}..."):
     for symbol in st.session_state.tickers:
         try:
-            raw = fetch_financials(symbol)
+            if data_source == "StockAnalysis.com":
+                raw = fetch_stockanalysis(symbol)
+            else:
+                raw = fetch_financials(symbol)
             metrics_df = compute_all_metrics(raw, years=years)
 
             if metrics_df.empty:

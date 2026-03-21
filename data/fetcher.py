@@ -54,6 +54,7 @@ def fetch_financials(symbol: str) -> dict:
         "info": info,
         "history": history,
         "symbol": symbol.upper(),
+        "source": "yfinance",
     }
 
 
