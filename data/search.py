@@ -7,7 +7,6 @@ plus deterministic exchange-suffix mapping so tickers work across both sources.
 
 import requests
 import streamlit as st
-from yfinance.search import Search as YFSearch
 
 # ---------------------------------------------------------------------------
 # Exchange mapping: StockAnalysis slug ↔ yfinance suffix
@@ -155,6 +154,7 @@ def _search_stockanalysis(query: str) -> list[dict]:
 def _search_yfinance(query: str) -> list[dict]:
     """Search yfinance for matching tickers."""
     try:
+        from yfinance.search import Search as YFSearch
         search = YFSearch(query, max_results=10)
         quotes = search.quotes
     except Exception:
