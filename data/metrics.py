@@ -251,16 +251,29 @@ def dcf_margin_of_safety(
 
 def compute_all_metrics(data: dict, years: int = 10) -> pd.DataFrame:
     """
-    Compute all 6 metrics from fetched data.
+    Compute all 7 metrics from fetched data.
+
+    Supports both yfinance and stockanalysis.com data sources.
+    When source is stockanalysis, pre-calculated ratios are used where available.
 
     Args:
-        data: dict returned by fetcher.fetch_financials()
+        data: dict returned by fetcher.fetch_financials() or scraper.fetch_stockanalysis()
         years: number of years of history to return
 
     Returns:
         DataFrame with columns: year, gross_margin, peg_ratio, revenue_growth,
-        roce, fcf_growth, ltd_fcf
+        roce, fcf_growth, ltd_fcf, dcf_mos
     """
+    source = data.get("source", "yfinance")
+
+    if source == "stockanalysis":
+        return _compute_from_stockanalysis(data, years)
+    else:
+        return _compute_from_yfinance(data, years)
+
+
+def _compute_from_yfinance(data: dict, years: int) -> pd.DataFrame:
+    """Compute metrics from yfinance raw financial data (original logic)."""
     income = data["income"]
     balance = data["balance"]
     cashflow = data["cashflow"]
@@ -293,3 +306,153 @@ def compute_all_metrics(data: dict, years: int = 10) -> pd.DataFrame:
     df["year"] = df.index.strftime("%Y")
 
     return df
+
+
+def _sa_get(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
+    """Get a column from a stockanalysis DataFrame by trying candidate names."""
+    for c in candidates:
+        if c in df.columns:
+            return df[c]
+    return pd.Series(np.nan, index=df.index)
+
+
+def _compute_from_stockanalysis(data: dict, years: int) -> pd.DataFrame:
+    """Compute metrics from stockanalysis.com scraped data.
+
+    Uses pre-calculated ratios where available, computes LT Debt/FCF and DCF ourselves.
+    """
+    income = data["income"]
+    balance = data["balance"]
+    cashflow = data["cashflow"]
+    ratios = data.get("ratios", pd.DataFrame())
+    info = data.get("info", {})
+
+    # Use the longest available DataFrame's index
+    if not income.empty:
+        idx = income.index
+    elif not ratios.empty:
+        idx = ratios.index
+    else:
+        return pd.DataFrame()
+
+    # Limit to requested years
+    idx = idx[-years:]
+    df = pd.DataFrame(index=idx)
+    df.index.name = "year_label"
+
+    # 1. Gross Margin (%) – pre-calculated on income statement page
+    df["gross_margin"] = _sa_get(income, ["Gross Margin"]).reindex(idx)
+
+    # 2. Revenue Growth (%) – pre-calculated on income statement page
+    df["revenue_growth"] = _sa_get(income, ["Revenue Growth (YoY)", "Revenue Growth"]).reindex(idx)
+
+    # 3. PEG Ratio – pre-calculated on ratios page
+    df["peg_ratio"] = _sa_get(ratios, ["PEG Ratio"]).reindex(idx)
+
+    # 4. ROCE (%) – pre-calculated on ratios page
+    roce_series = _sa_get(ratios, ["Return on Capital Employed (ROCE)", "ROCE"])
+    # Strip % if stored as string-like values (already parsed as float)
+    df["roce"] = roce_series.reindex(idx)
+
+    # 5. FCF Growth (%) – pre-calculated on income statement page
+    df["fcf_growth"] = _sa_get(income, ["Free Cash Flow Growth"]).reindex(idx)
+    # Also try cash flow page
+    if df["fcf_growth"].isna().all():
+        df["fcf_growth"] = _sa_get(cashflow, ["Free Cash Flow Growth"]).reindex(idx)
+
+    # 6. LT Debt / FCF – compute from scraped raw data
+    ltd = _sa_get(balance, ["Long-Term Debt", "Long Term Debt"]).reindex(idx)
+    fcf_vals = _sa_get(income, ["Free Cash Flow"]).reindex(idx)
+    if fcf_vals.isna().all():
+        fcf_vals = _sa_get(cashflow, ["Free Cash Flow"]).reindex(idx)
+    df["ltd_fcf"] = (ltd / fcf_vals).replace([np.inf, -np.inf], np.nan)
+
+    # 7. DCF Margin of Safety – compute from scraped data
+    df["dcf_mos"] = _dcf_from_stockanalysis(income, balance, cashflow, ratios, info, idx)
+
+    # Year labels – index is already year strings from scraper
+    df["year"] = idx
+
+    return df
+
+
+def _dcf_from_stockanalysis(
+    income: pd.DataFrame,
+    balance: pd.DataFrame,
+    cashflow: pd.DataFrame,
+    ratios: pd.DataFrame,
+    info: dict,
+    idx: pd.Index,
+) -> pd.Series:
+    """Compute DCF Margin of Safety from stockanalysis.com scraped data."""
+    # Get FCF (in millions on stockanalysis.com)
+    fcf_series = _sa_get(income, ["Free Cash Flow"]).reindex(idx)
+    if fcf_series.isna().all():
+        fcf_series = _sa_get(cashflow, ["Free Cash Flow"]).reindex(idx)
+
+    shares_series = _sa_get(income, [
+        "Shares Outstanding (Diluted)", "Shares Outstanding (Basic)"
+    ]).reindex(idx)
+
+    total_debt_series = _sa_get(balance, ["Total Debt"]).reindex(idx)
+    cash_series = _sa_get(balance, [
+        "Cash & Short-Term Investments", "Cash & Equivalents",
+    ]).reindex(idx)
+
+    # Stock price per year from ratios page
+    price_series = _sa_get(ratios, ["Last Close Price"]).reindex(idx)
+
+    # Average FCF growth for projection
+    fcf_growth_rates = fcf_series.pct_change().dropna()
+    if not fcf_growth_rates.empty:
+        mean_growth = fcf_growth_rates.mean()
+        mean_growth = max(min(mean_growth, 0.25), 0.02)
+    else:
+        mean_growth = DCF_FCF_GROWTH_DEFAULT
+
+    results = []
+    for year in idx:
+        try:
+            fcf_val = fcf_series.get(year, np.nan)
+            shares_val = shares_series.get(year, np.nan)
+            debt_val = total_debt_series.get(year, np.nan)
+            cash_val = cash_series.get(year, np.nan)
+            price_val = price_series.get(year, np.nan)
+
+            # stockanalysis.com reports in millions; shares in millions too
+            # FCF and debt in millions, shares in millions → per-share = millions/millions = OK
+            if pd.isna(fcf_val) or pd.isna(shares_val) or shares_val <= 0 or fcf_val <= 0:
+                results.append(np.nan)
+                continue
+
+            if pd.isna(price_val) or price_val <= 0:
+                results.append(np.nan)
+                continue
+
+            est_growth = mean_growth
+
+            # Stage 1: project FCF
+            projected_fcf = []
+            current_fcf = fcf_val
+            for yr in range(1, DCF_PROJECTION_YEARS + 1):
+                current_fcf *= (1 + est_growth)
+                discounted = current_fcf / (1 + DCF_DISCOUNT_RATE) ** yr
+                projected_fcf.append(discounted)
+
+            # Stage 2: terminal value
+            terminal_fcf = current_fcf * (1 + DCF_TERMINAL_GROWTH)
+            terminal_value = terminal_fcf / (DCF_DISCOUNT_RATE - DCF_TERMINAL_GROWTH)
+            discounted_terminal = terminal_value / (1 + DCF_DISCOUNT_RATE) ** DCF_PROJECTION_YEARS
+
+            enterprise_value = sum(projected_fcf) + discounted_terminal
+            debt_adj = debt_val if not pd.isna(debt_val) else 0
+            cash_adj = cash_val if not pd.isna(cash_val) else 0
+            equity_value = enterprise_value - debt_adj + cash_adj
+
+            intrinsic_per_share = equity_value / shares_val
+            mos = (intrinsic_per_share - price_val) / price_val * 100
+            results.append(mos)
+        except Exception:
+            results.append(np.nan)
+
+    return pd.Series(results, index=idx)
