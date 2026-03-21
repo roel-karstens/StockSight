@@ -125,14 +125,10 @@ def build_metric_chart(
         )
 
     fig.update_layout(
-        title=dict(
-            text=f"{t['label']} ({t['unit'] or '-'})",
-            font=dict(size=16),
-        ),
         xaxis_title="Fiscal Year",
         yaxis_title=f"{t['label']}",
         height=320,
-        margin=dict(l=50, r=20, t=50, b=40),
+        margin=dict(l=50, r=20, t=30, b=40),
         legend=dict(
             orientation="h",
             yanchor="bottom",

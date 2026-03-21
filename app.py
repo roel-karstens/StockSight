@@ -16,6 +16,7 @@ from data.metrics import compute_all_metrics
 from ui.charts import build_all_charts
 from ui.indicators import (
     METRIC_ORDER,
+    METRIC_FORMULAS,
     THRESHOLDS,
     badge_html,
     evaluate,
@@ -185,49 +186,44 @@ if not all_data:
 
 charts = build_all_charts(all_data)
 
+def _render_chart_cell(metric_key: str, charts: dict, all_data: dict):
+    """Render a single chart cell: title + info popover, badges, chart."""
+    t = THRESHOLDS[metric_key]
+    # Title with compact info popover on the same line
+    title_col, info_col = st.columns([8, 1], gap="small")
+    with title_col:
+        st.markdown(f"**{t['label']} ({t['unit'] or '-'})**")
+    with info_col:
+        with st.popover("ℹ️"):
+            st.markdown(METRIC_FORMULAS.get(metric_key, "_No description available._"))
+    # Badges
+    badges = []
+    for symbol, df in all_data.items():
+        if metric_key in df.columns and not df[metric_key].dropna().empty:
+            latest = df[metric_key].dropna().iloc[-1]
+            badges.append(badge_html(metric_key, symbol, latest))
+    if badges:
+        st.markdown(" &nbsp; ".join(badges))
+    # Chart
+    st.plotly_chart(charts[metric_key], key=f"chart_{metric_key}", width="stretch")
+
+
 # Row 1 (metrics 1-3)
 row1_cols = st.columns(3)
 for i, metric_key in enumerate(METRIC_ORDER[:3]):
     with row1_cols[i]:
-        badges = []
-        for symbol, df in all_data.items():
-            if metric_key in df.columns and not df[metric_key].dropna().empty:
-                latest = df[metric_key].dropna().iloc[-1]
-                badges.append(badge_html(metric_key, symbol, latest))
-        if badges:
-            st.markdown(" &nbsp; ".join(badges))
-        st.plotly_chart(charts[metric_key], key=f"chart_{metric_key}", width="stretch")
+        _render_chart_cell(metric_key, charts, all_data)
 
 # Row 2 (metrics 4-6)
 row2_cols = st.columns(3)
 for i, metric_key in enumerate(METRIC_ORDER[3:6]):
     with row2_cols[i]:
-        badges = []
-        for symbol, df in all_data.items():
-            if metric_key in df.columns and not df[metric_key].dropna().empty:
-                latest = df[metric_key].dropna().iloc[-1]
-                badges.append(badge_html(metric_key, symbol, latest))
-        if badges:
-            st.markdown(" &nbsp; ".join(badges))
-        st.plotly_chart(charts[metric_key], key=f"chart_{metric_key}", width="stretch")
+        _render_chart_cell(metric_key, charts, all_data)
 
 # Row 3 (DCF Margin of Safety – full width)
 if "dcf_mos" in METRIC_ORDER:
     st.divider()
-    st.subheader("💰 DCF Valuation")
-    st.caption(
-        "Margin of Safety = (Intrinsic Value − Market Price) / Market Price. "
-        "Positive = undervalued. Uses 10% discount rate, 3% terminal growth, "
-        "and FCF growth estimated from trailing data (clamped 2–30%)."
-    )
-    badges = []
-    for symbol, df in all_data.items():
-        if "dcf_mos" in df.columns and not df["dcf_mos"].dropna().empty:
-            latest = df["dcf_mos"].dropna().iloc[-1]
-            badges.append(badge_html("dcf_mos", symbol, latest))
-    if badges:
-        st.markdown(" &nbsp; ".join(badges))
-    st.plotly_chart(charts["dcf_mos"], key="chart_dcf_mos", width="stretch")
+    _render_chart_cell("dcf_mos", charts, all_data)
 
 # ---------------------------------------------------------------------------
 # Summary Scorecard Table
