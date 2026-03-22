@@ -13,25 +13,12 @@ from data.scraper import fetch_stockanalysis, _scrape_live_price
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_combined(slug: str, yf_symbol: str) -> dict:
+def fetch_yfinance(yf_symbol: str) -> dict:
     """
-    Fetch financial data from both sources and merge.
+    Fetch yfinance data only: live price, price history, fiscal-year-end dates.
 
-    Uses StockAnalysis.com for ~6 years of financial statements and ratios,
-    and yfinance for live price, price history, and fiscal-year-end dates.
-
-    Returns a dict with keys:
-        - 'income', 'balance', 'cashflow', 'ratios': from StockAnalysis
-        - 'info': yfinance ticker info (contains currentPrice)
-        - 'history': yfinance 10-year monthly price history
-        - 'yf_income': yfinance income statement (for fiscal-year-end dates)
-        - 'symbol': display symbol
-        - 'source': 'combined'
+    This is safe to call from multiple threads in parallel (no rate limit needed).
     """
-    # --- StockAnalysis: financials & ratios ---
-    sa_data = fetch_stockanalysis(slug)
-
-    # --- yfinance: live price, history, fiscal dates ---
     ticker = yf.Ticker(yf_symbol)
 
     try:
@@ -39,15 +26,8 @@ def fetch_combined(slug: str, yf_symbol: str) -> dict:
     except Exception:
         info = {}
 
-    # If yfinance has no live price, fall back to SA scrape
-    if not info.get("currentPrice") and not info.get("regularMarketPrice"):
-        live = _scrape_live_price(slug)
-        if live:
-            info["currentPrice"] = live
-
     history = ticker.history(period="10y", interval="1mo")
 
-    # yfinance income statement gives us exact fiscal-year-end dates
     yf_income_raw = ticker.financials
     if yf_income_raw is not None and not yf_income_raw.empty:
         yf_income = yf_income_raw.T.sort_index()
@@ -55,16 +35,50 @@ def fetch_combined(slug: str, yf_symbol: str) -> dict:
         yf_income = pd.DataFrame()
 
     return {
+        "info": info,
+        "history": history,
+        "yf_income": yf_income,
+    }
+
+
+def combine_data(slug: str, yf_symbol: str, sa_data: dict, yf_data: dict) -> dict:
+    """
+    Merge StockAnalysis and yfinance data into the unified format.
+
+    Called after both sources have been fetched (possibly in parallel).
+    """
+    info = yf_data["info"]
+
+    # If yfinance has no live price, fall back to SA scrape
+    if not info.get("currentPrice") and not info.get("regularMarketPrice"):
+        live = _scrape_live_price(slug)
+        if live:
+            info["currentPrice"] = live
+
+    return {
         "income": sa_data["income"],
         "balance": sa_data["balance"],
         "cashflow": sa_data["cashflow"],
         "ratios": sa_data.get("ratios", pd.DataFrame()),
         "info": info,
-        "history": history,
-        "yf_income": yf_income,
+        "history": yf_data["history"],
+        "yf_income": yf_data["yf_income"],
         "symbol": sa_data.get("symbol", yf_symbol.upper()),
         "source": "combined",
     }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_combined(slug: str, yf_symbol: str) -> dict:
+    """
+    Fetch financial data from both sources and merge (sequential fallback).
+
+    For parallel fetching, use fetch_yfinance + fetch_stockanalysis + combine_data
+    separately in app.py.
+    """
+    sa_data = fetch_stockanalysis(slug)
+    yf_data = fetch_yfinance(yf_symbol)
+    return combine_data(slug, yf_symbol, sa_data, yf_data)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

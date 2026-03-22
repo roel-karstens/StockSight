@@ -4,12 +4,16 @@ StockSight – Stock Financial Health Dashboard
 Entry point: streamlit run app.py
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import streamlit as st
 import pandas as pd
 
 from streamlit_searchbox import st_searchbox
 
-from data.fetcher import fetch_combined
+from data.fetcher import fetch_yfinance, combine_data
+from data.scraper import fetch_stockanalysis
+from data.portfolio import DEFAULT_PORTFOLIO
 from data.search import search_tickers
 from data.metrics import compute_all_metrics
 from ui.charts import build_all_charts
@@ -60,6 +64,29 @@ def _migrate_ticker(ticker) -> dict:
 # Auto-migrate any old-format tickers
 st.session_state.tickers = [_migrate_ticker(t) for t in st.session_state.tickers]
 
+
+def _load_portfolio():
+    """Add default portfolio tickers, skipping duplicates and respecting the 20-ticker limit."""
+    existing_slugs = {t["slug"] for t in st.session_state.tickers}
+    added = 0
+    skipped = 0
+    for ticker in DEFAULT_PORTFOLIO:
+        if len(st.session_state.tickers) >= 20:
+            remaining = len(DEFAULT_PORTFOLIO) - added - skipped
+            st.toast(f"⚠️ Hit 20-ticker limit. {remaining} stocks not added.")
+            break
+        if ticker["slug"] in existing_slugs:
+            skipped += 1
+            continue
+        st.session_state.tickers.append(ticker)
+        existing_slugs.add(ticker["slug"])
+        added += 1
+    if skipped:
+        st.toast(f"✅ Loaded {added} portfolio stocks ({skipped} already active)")
+    else:
+        st.toast(f"✅ Loaded {added} portfolio stocks")
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -95,6 +122,10 @@ with st.sidebar:
         submit_function=_on_select,
     )
 
+    if st.button("📋 Load Default Portfolio", use_container_width=True):
+        _load_portfolio()
+        st.rerun()
+
     if st.button("🗑️ Clear All", use_container_width=True):
         st.session_state.tickers = []
         st.rerun()
@@ -128,7 +159,7 @@ st.title("📈 StockSight")
 st.markdown("Visual stock financial health analysis — search, compare, and evaluate.")
 
 if not st.session_state.tickers:
-    st.info("👈 Search for a ticker in the sidebar to get started. Try **MSFT**, **AAPL**, or **Constellation Software**.")
+    st.info("👈 Search for a ticker in the sidebar to get started, or click **Load Default Portfolio**.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -138,19 +169,66 @@ if not st.session_state.tickers:
 all_data: dict[str, pd.DataFrame] = {}
 errors: list[str] = []
 
-with st.spinner("Fetching financial data..."):
-    for ticker_info in st.session_state.tickers:
-        label = ticker_info["symbol"]  # Short label for charts
-        try:
-            raw = fetch_combined(ticker_info["slug"], ticker_info["yf_symbol"])
-            metrics_df = compute_all_metrics(raw, years=years)
+tickers = st.session_state.tickers
+n = len(tickers)
 
-            if metrics_df.empty:
-                errors.append(f"⚠️ No financial data available for **{ticker_info['display']}**")
+with st.status(f"Fetching financial data for {n} stocks...", expanded=False) as status:
+    # Phase 1: Fetch all yfinance data in parallel (no rate limit needed)
+    status.update(label=f"Fetching price data (0/{n})...")
+    yf_results: dict[str, dict] = {}
+    yf_done = 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        yf_futures = {
+            pool.submit(fetch_yfinance, ti["yf_symbol"]): ti
+            for ti in tickers
+        }
+        for future in as_completed(yf_futures):
+            ti = yf_futures[future]
+            try:
+                yf_results[ti["slug"]] = future.result()
+                yf_done += 1
+                status.update(label=f"Fetching price data ({yf_done}/{n})...")
+            except Exception as e:
+                yf_done += 1
+                errors.append(f"❌ Error fetching yfinance data for **{ti['display']}**: {e}")
+
+    # Phase 2: Fetch SA data with rate limiting (global lock serialises requests)
+    sa_results: dict[str, dict] = {}
+    sa_done = 0
+    status.update(label=f"Fetching financial statements (0/{n})...")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sa_futures = {
+            pool.submit(fetch_stockanalysis, ti["slug"]): ti
+            for ti in tickers
+        }
+        for future in as_completed(sa_futures):
+            ti = sa_futures[future]
+            sa_done += 1
+            try:
+                sa_results[ti["slug"]] = future.result()
+                status.update(label=f"Fetching financial statements ({sa_done}/{n})...")
+            except Exception as e:
+                status.update(label=f"Fetching financial statements ({sa_done}/{n})...")
+                errors.append(f"❌ Error fetching **{ti['display']}**: {e}")
+
+    # Phase 3: Combine and compute metrics
+    status.update(label="Computing metrics...")
+    for ti in tickers:
+        slug = ti["slug"]
+        label = ti["symbol"]
+        if slug not in sa_results or slug not in yf_results:
+            continue
+        try:
+            raw = combine_data(slug, ti["yf_symbol"], sa_results[slug], yf_results[slug])
+            df = compute_all_metrics(raw, years=years)
+            if df.empty:
+                errors.append(f"⚠️ No financial data available for **{ti['display']}**")
             else:
-                all_data[label] = metrics_df
+                all_data[label] = df
         except Exception as e:
-            errors.append(f"❌ Error fetching **{ticker_info['display']}**: {e}")
+            errors.append(f"❌ Error computing metrics for **{ti['display']}**: {e}")
+
+    status.update(label=f"Done — loaded {len(all_data)}/{n} stocks.", state="complete")
 
 # Show errors
 for err in errors:
@@ -169,12 +247,12 @@ all_symbols = list(all_data.keys())
 
 # Auto-update selection when tickers are added/removed
 if "chart_filter" not in st.session_state:
-    st.session_state.chart_filter = all_symbols[:8]
+    st.session_state.chart_filter = all_symbols[:3]
 else:
-    # Add any new tickers not yet in the filter (up to 8 shown by default)
+    # Add any new tickers not yet in the filter (up to 3 shown by default)
     current = st.session_state.chart_filter
     for sym in all_symbols:
-        if sym not in current and len(current) < 8:
+        if sym not in current and len(current) < 3:
             current.append(sym)
     # Remove tickers that no longer exist
     st.session_state.chart_filter = [s for s in current if s in all_symbols]
@@ -263,8 +341,11 @@ for symbol, df in all_data.items():
     scorecard_data.append(row)
 
 scorecard_df = pd.DataFrame(scorecard_data)
+# Dynamic height: 35px per data row + 45px for header/padding, so all rows visible without scrolling
+scorecard_height = len(scorecard_df) * 35 + 45
 st.dataframe(
     scorecard_df,
     width="stretch",
+    height=scorecard_height,
     hide_index=True,
 )

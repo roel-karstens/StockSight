@@ -7,6 +7,7 @@ parses HTML tables, and returns data in the common format used by metrics.py.
 
 import re
 import time
+import threading
 
 import numpy as np
 import pandas as pd
@@ -21,8 +22,25 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
 }
-REQUEST_DELAY = 0.5  # seconds between requests
+REQUEST_DELAY = 2.0  # seconds between requests (SA rate-limits aggressively)
 REQUEST_TIMEOUT = 15  # seconds
+
+# Global rate limiter – ensures minimum delay between ANY two SA requests,
+# even when called from multiple threads.
+_request_lock = threading.Lock()
+_last_request_time = 0.0
+
+
+def _rate_limited_get(url: str) -> requests.Response:
+    """Thread-safe rate-limited GET request to StockAnalysis."""
+    global _last_request_time
+    with _request_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_time
+        if elapsed < REQUEST_DELAY:
+            time.sleep(REQUEST_DELAY - elapsed)
+        _last_request_time = time.monotonic()
+    return requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -142,21 +160,22 @@ def _dict_to_dataframe(data: dict[str, dict[str, float]]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _fetch_page(url: str) -> str:
-    """Fetch a single page with error handling and rate limiting."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        return resp.text
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            # Rate limited – retry once after delay
-            time.sleep(3)
-            resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    """Fetch a single page with error handling, rate limiting, and retry on 403/429."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = _rate_limited_get(url)
             resp.raise_for_status()
             return resp.text
-        raise
-    except requests.exceptions.RequestException:
-        raise
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status in (403, 429) and attempt < max_retries - 1:
+                # Rate limited or blocked – back off and retry
+                backoff = 10 * (attempt + 1)  # 10s, 20s
+                time.sleep(backoff)
+                continue
+            raise
+    return ""  # unreachable but satisfies type checker
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +189,7 @@ def _scrape_live_price(slug: str) -> float | None:
     else:
         url = f"{BASE_URL}/stocks/{slug}/"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp = _rate_limited_get(url)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         # Price is in the first div with 'text-4xl' in its class
@@ -232,7 +251,6 @@ def fetch_stockanalysis(slug: str) -> dict:
     for key, url in pages.items():
         html = _fetch_page(url)
         raw_tables[key] = _parse_financial_table(html)
-        time.sleep(REQUEST_DELAY)
 
     if not raw_tables.get("income"):
         raise ValueError(
