@@ -21,10 +21,20 @@ def fetch_yfinance(yf_symbol: str) -> dict:
     """
     ticker = yf.Ticker(yf_symbol)
 
+    info: dict = {}
     try:
         info = ticker.info or {}
     except Exception:
-        info = {}
+        pass
+
+    # Fallback: if .info failed (e.g. on Python 3.14), try fetching
+    # market cap from fast_info so allocation at least gets cap data
+    if not info.get("marketCap"):
+        try:
+            fi = ticker.fast_info
+            info.setdefault("marketCap", int(getattr(fi, "market_cap", 0) or 0) or None)
+        except Exception:
+            pass
 
     history = ticker.history(period="10y", interval="1mo")
 

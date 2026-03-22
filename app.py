@@ -360,8 +360,13 @@ st.dataframe(
 if len(ticker_infos) >= 2:
     st.divider()
     with st.expander("📊 Portfolio Allocation", expanded=False):
-        alloc_df = build_allocation_df(ticker_infos)
-        if not alloc_df.empty:
+        # Filter out tickers with no useful info (e.g. yfinance .info failed)
+        valid_infos = {
+            sym: info for sym, info in ticker_infos.items()
+            if info.get("country") or info.get("sector") or info.get("marketCap")
+        }
+        if len(valid_infos) >= 2:
+            alloc_df = build_allocation_df(valid_infos)
             treemaps = build_allocation_treemaps(alloc_df)
             tm_cols = st.columns(3)
             for col, (key, label) in zip(
@@ -375,3 +380,8 @@ if len(ticker_infos) >= 2:
                         key=f"treemap_{key}",
                         width="stretch",
                     )
+            missing = len(ticker_infos) - len(valid_infos)
+            if missing:
+                st.caption(f"⚠️ {missing} ticker(s) excluded — no profile data available.")
+        else:
+            st.info("Profile data unavailable — allocation breakdown requires country/sector info from Yahoo Finance.")
