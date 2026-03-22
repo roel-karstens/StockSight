@@ -52,7 +52,7 @@ def gross_margin(income: pd.DataFrame) -> pd.Series:
 def revenue_growth(income: pd.DataFrame) -> pd.Series:
     """Revenue Growth (%) = YoY percentage change in revenue."""
     revenue = _safe_get(income, ["Total Revenue", "Revenue"])
-    return (revenue.pct_change() * 100).replace([np.inf, -np.inf], np.nan)
+    return (revenue.pct_change(fill_method=None) * 100).replace([np.inf, -np.inf], np.nan)
 
 
 def roce(income: pd.DataFrame, balance: pd.DataFrame) -> pd.Series:
@@ -71,7 +71,7 @@ def roce(income: pd.DataFrame, balance: pd.DataFrame) -> pd.Series:
 def fcf_growth(cashflow: pd.DataFrame) -> pd.Series:
     """Free Cash Flow Growth (%) = YoY percentage change in FCF."""
     fcf = _safe_get(cashflow, ["Free Cash Flow"])
-    return (fcf.pct_change() * 100).replace([np.inf, -np.inf], np.nan)
+    return (fcf.pct_change(fill_method=None) * 100).replace([np.inf, -np.inf], np.nan)
 
 
 def ltd_over_fcf(balance: pd.DataFrame, cashflow: pd.DataFrame) -> pd.Series:
@@ -150,7 +150,7 @@ def peg_ratio(
         else:
             return pd.Series(np.nan, index=income.index)
 
-    eps_growth_pct = eps.pct_change() * 100  # e.g. 15 means 15%
+    eps_growth_pct = eps.pct_change(fill_method=None) * 100  # e.g. 15 means 15%
 
     # Get year-end prices aligned to fiscal year end dates
     if history is None or history.empty:
@@ -222,7 +222,7 @@ def dcf_margin_of_safety(
     hist_index = history.index.tz_localize(None) if history.index.tz is not None else history.index
 
     # Estimate FCF growth rate from available data – use average of all available
-    fcf_growth_rates = fcf_series.pct_change()
+    fcf_growth_rates = fcf_series.pct_change(fill_method=None)
     avg_fcf_growth = fcf_growth_rates.dropna()
     if not avg_fcf_growth.empty:
         mean_growth = avg_fcf_growth.mean()
@@ -518,7 +518,7 @@ def _compute_combined(data: dict, years: int) -> pd.DataFrame:
     )
 
     # Average FCF growth for projection
-    fcf_growth_rates = fcf_reindexed.pct_change().dropna()
+    fcf_growth_rates = fcf_reindexed.pct_change(fill_method=None).dropna()
     if not fcf_growth_rates.empty:
         mean_growth = max(min(fcf_growth_rates.mean(), 0.25), 0.02)
     else:
@@ -668,7 +668,7 @@ def _compute_from_yfinance(data: dict, years: int) -> pd.DataFrame:
                 cash_adj = cash_val if not pd.isna(cash_val) else 0
 
                 # FCF growth rate (same as used in DCF)
-                fcf_growth_rates = _safe_get(cashflow_trimmed, ["Free Cash Flow"]).pct_change().dropna()
+                fcf_growth_rates = _safe_get(cashflow_trimmed, ["Free Cash Flow"]).pct_change(fill_method=None).dropna()
                 if not fcf_growth_rates.empty:
                     mean_g = max(min(fcf_growth_rates.mean(), 0.25), 0.02)
                 else:
@@ -804,7 +804,7 @@ def _compute_from_stockanalysis(data: dict, years: int) -> pd.DataFrame:
             debt_adj = debt_val if not pd.isna(debt_val) else 0
             cash_adj = cash_val if not pd.isna(cash_val) else 0
 
-            fcf_growth_rates = fcf_vals.pct_change().dropna()
+            fcf_growth_rates = fcf_vals.pct_change(fill_method=None).dropna()
             if not fcf_growth_rates.empty:
                 mean_g = max(min(fcf_growth_rates.mean(), 0.25), 0.02)
             else:
@@ -848,7 +848,7 @@ def _dcf_from_stockanalysis(
     price_series = _sa_get(ratios, ["Last Close Price"]).reindex(idx)
 
     # Average FCF growth for projection
-    fcf_growth_rates = fcf_series.pct_change().dropna()
+    fcf_growth_rates = fcf_series.pct_change(fill_method=None).dropna()
     if not fcf_growth_rates.empty:
         mean_growth = fcf_growth_rates.mean()
         mean_growth = max(min(mean_growth, 0.25), 0.02)
