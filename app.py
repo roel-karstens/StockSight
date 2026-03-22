@@ -16,7 +16,8 @@ from data.scraper import fetch_stockanalysis
 from data.portfolio import DEFAULT_PORTFOLIO
 from data.search import search_tickers
 from data.metrics import compute_all_metrics
-from ui.charts import build_all_charts
+from data.allocation import build_allocation_df
+from ui.charts import build_all_charts, build_allocation_treemaps
 from ui.indicators import (
     METRIC_ORDER,
     METRIC_FORMULAS,
@@ -213,6 +214,7 @@ with st.status(f"Fetching financial data for {n} stocks...", expanded=False) as 
 
     # Phase 3: Combine and compute metrics
     status.update(label="Computing metrics...")
+    ticker_infos: dict[str, dict] = {}  # symbol → yfinance info (for allocation)
     for ti in tickers:
         slug = ti["slug"]
         label = ti["symbol"]
@@ -225,6 +227,7 @@ with st.status(f"Fetching financial data for {n} stocks...", expanded=False) as 
                 errors.append(f"⚠️ No financial data available for **{ti['display']}**")
             else:
                 all_data[label] = df
+                ticker_infos[label] = yf_results[slug].get("info", {})
         except Exception as e:
             errors.append(f"❌ Error computing metrics for **{ti['display']}**: {e}")
 
@@ -349,3 +352,26 @@ st.dataframe(
     height=scorecard_height,
     hide_index=True,
 )
+
+# ---------------------------------------------------------------------------
+# Portfolio Allocation Treemaps
+# ---------------------------------------------------------------------------
+
+if len(ticker_infos) >= 2:
+    st.divider()
+    with st.expander("📊 Portfolio Allocation", expanded=False):
+        alloc_df = build_allocation_df(ticker_infos)
+        if not alloc_df.empty:
+            treemaps = build_allocation_treemaps(alloc_df)
+            tm_cols = st.columns(3)
+            for col, (key, label) in zip(
+                tm_cols,
+                [("country", "Country"), ("sector", "Sector / Industry"), ("cap", "Cap Size")],
+            ):
+                with col:
+                    st.markdown(f"**{label}**")
+                    st.plotly_chart(
+                        treemaps[key],
+                        key=f"treemap_{key}",
+                        width="stretch",
+                    )
