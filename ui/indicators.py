@@ -7,6 +7,14 @@ indicators.py – Threshold logic and good/bad/neutral badge rendering.
 # ---------------------------------------------------------------------------
 
 THRESHOLDS = {
+    "stock_price": {
+        "label": "Stock Price",
+        "good": None,
+        "bad": None,
+        "higher_is_better": None,
+        "unit": "$",
+        "format": ".2f",
+    },
     "gross_margin": {
         "label": "Gross Margin",
         "good": 50,
@@ -47,6 +55,14 @@ THRESHOLDS = {
         "unit": "%",
         "format": ".1f",
     },
+    "pe_ratio": {
+        "label": "PE Ratio",
+        "good": None,
+        "bad": None,
+        "higher_is_better": None,
+        "unit": "x",
+        "format": ".1f",
+    },
     "ltd_fcf": {
         "label": "LT Debt / FCF",
         "good": 4.0,
@@ -63,25 +79,39 @@ THRESHOLDS = {
         "unit": "%",
         "format": ".1f",
     },
+    "implied_growth": {
+        "label": "Implied FCF Growth",
+        "good": None,
+        "bad": None,
+        "higher_is_better": None,
+        "unit": "%",
+        "format": ".1f",
+    },
 }
 
 # Ordered list of metric keys for consistent display
 METRIC_ORDER = [
+    "stock_price",
     "gross_margin",
-    "peg_ratio",
-    "revenue_growth",
     "roce",
-    "fcf_growth",
     "ltd_fcf",
+    "revenue_growth",
+    "fcf_growth",
+    "pe_ratio",
+    "peg_ratio",
     "dcf_mos",
+    "implied_growth",
 ]
+
+# Metrics that should NOT appear in the scorecard (informational charts only)
+SCORECARD_EXCLUDE = {"stock_price"}
 
 
 def evaluate(metric_key: str, value: float) -> str:
     """
     Evaluate a metric value against thresholds.
 
-    Returns: 'good', 'neutral', or 'bad'.
+    Returns: 'good', 'neutral', 'bad', or 'none' (no threshold).
     """
     import math
 
@@ -89,6 +119,10 @@ def evaluate(metric_key: str, value: float) -> str:
         return "neutral"
 
     t = THRESHOLDS[metric_key]
+
+    # No-threshold metrics (PE, Implied Growth, Stock Price)
+    if t["good"] is None or t["bad"] is None:
+        return "none"
 
     if t["higher_is_better"]:
         if value >= t["good"]:
@@ -111,12 +145,12 @@ def evaluate(metric_key: str, value: float) -> str:
 
 def rating_emoji(rating: str) -> str:
     """Return a colored emoji for a rating."""
-    return {"good": "🟢", "neutral": "🟡", "bad": "🔴"}.get(rating, "⚪")
+    return {"good": "🟢", "neutral": "🟡", "bad": "🔴", "none": "⚪"}.get(rating, "⚪")
 
 
 def rating_color(rating: str) -> str:
     """Return a CSS/Plotly color for a rating."""
-    return {"good": "#22c55e", "neutral": "#eab308", "bad": "#ef4444"}.get(rating, "#6b7280")
+    return {"good": "#22c55e", "neutral": "#eab308", "bad": "#ef4444", "none": "#6b7280"}.get(rating, "#6b7280")
 
 
 def format_value(metric_key: str, value: float) -> str:
@@ -299,6 +333,62 @@ $$\\text{Intrinsic Value per Share} = \\frac{\\text{Equity}}{\\text{Shares Outst
 - 🟡 Neutral: −20% to +20%
 - 🔴 Bad: < −20% (overvalued)
 
+**Note:** The *Now* data point uses today's live market price (instead of fiscal year-end close) with the most recent fiscal year's financials.
+
 **Interpretation:** Positive = stock trades below estimated intrinsic value (potential upside). Negative = overvalued relative to DCF model. Highly sensitive to growth rate assumptions.
+""",
+    "pe_ratio": """**📐 PE Ratio**
+
+**Formula:**
+
+$$\\text{PE Ratio} = \\frac{\\text{Year-End Stock Price}}{\\text{Diluted EPS}}$$
+
+**Data source fields:**
+- **yfinance:** `Diluted EPS` (income), year-end close price from history
+- **StockAnalysis:** pre-calculated `PE Ratio` on ratios page
+
+**No thresholds** — a high PE is justified for high-growth companies, while a low PE may reflect low growth or value. Compare across peers and over time.
+
+**Note:** The *Now* data point uses today's live market price with the most recent fiscal year's EPS.
+
+**Interpretation:** Shows how much the market pays per dollar of earnings. Context-dependent — use alongside growth metrics.
+""",
+    "implied_growth": """**📐 Implied FCF Growth (%)**
+
+**Formula (Reverse DCF):**
+
+Solve for $g$ such that:
+
+$$\\text{Intrinsic Value per Share}(g) = \\text{Market Price}$$
+
+Uses the same two-stage DCF model as Margin of Safety but works backwards — given the market price, what FCF growth rate would the market need to believe in?
+
+**Method:** Bisection search between −10% and 60% growth.
+
+**Same assumptions as DCF MoS:**
+
+| Parameter | Value |
+|---|---|
+| WACC (discount rate) | 10% |
+| Terminal growth | 3% |
+| Projection years | 10 |
+
+**No thresholds** — whether the implied growth rate is realistic depends entirely on the company's industry, competitive position, and historical track record.
+
+**Note:** The *Now* data point uses today's live market price — making this the most current estimate of market expectations.
+
+**Interpretation:** "The market needs X% annual FCF growth for 10 years to justify today's price." Lower = easier to justify. Higher = market expects heroic growth.
+""",
+    "stock_price": """**📐 Stock Price ($)**
+
+Year-end closing stock price for each fiscal year.
+
+**Data source fields:**
+- **yfinance:** Closest monthly close price to fiscal year-end date
+- **StockAnalysis:** `Last Close Price` on ratios page
+
+The *Now* data point shows today's live market price.
+
+**No thresholds** — purely informational. Each ticker has its own Y-axis for readability.
 """,
 }

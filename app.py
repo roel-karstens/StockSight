@@ -9,14 +9,14 @@ import pandas as pd
 
 from streamlit_searchbox import st_searchbox
 
-from data.fetcher import fetch_financials
-from data.scraper import fetch_stockanalysis
+from data.fetcher import fetch_combined
 from data.search import search_tickers
 from data.metrics import compute_all_metrics
 from ui.charts import build_all_charts
 from ui.indicators import (
     METRIC_ORDER,
     METRIC_FORMULAS,
+    SCORECARD_EXCLUDE,
     THRESHOLDS,
     badge_html,
     evaluate,
@@ -69,29 +69,16 @@ with st.sidebar:
     st.caption("Stock Financial Health Dashboard")
     st.divider()
 
-    # Data source selector (placed BEFORE search so search uses correct source)
-    data_source = st.radio(
-        "Data Source",
-        options=["StockAnalysis.com", "Yahoo Finance"],
-        index=0,
-        help="StockAnalysis.com provides ~6 years of data with pre-calculated ratios. Yahoo Finance provides 3–4 years of raw data.",
-    )
-
-    st.divider()
-
-    # Determine which search backend to use
-    _search_source = "stockanalysis" if data_source == "StockAnalysis.com" else "yfinance"
-
     def _do_search(query: str) -> list[tuple[str, dict]]:
-        return search_tickers(query, source=_search_source)
+        return search_tickers(query, source="stockanalysis")
 
     def _on_select(ticker_info: dict) -> None:
         """Called when the user selects a ticker from the dropdown."""
         if not ticker_info or not isinstance(ticker_info, dict):
             return
         existing_slugs = {t["slug"] for t in st.session_state.tickers}
-        if len(st.session_state.tickers) >= 5:
-            st.toast("⚠️ Maximum 5 tickers for comparison.")
+        if len(st.session_state.tickers) >= 20:
+            st.toast("⚠️ Maximum 20 tickers for comparison.")
         elif ticker_info["slug"] in existing_slugs:
             st.toast(f"ℹ️ {ticker_info['display']} is already added.")
         else:
@@ -128,13 +115,9 @@ with st.sidebar:
 
     # Time range
     years = st.slider("Years of history", min_value=3, max_value=10, value=5)
-    if data_source == "Yahoo Finance":
-        st.caption("ℹ️ Note: Yahoo Finance typically provides 3–4 years of annual data.")
-    else:
-        st.caption("ℹ️ StockAnalysis.com typically provides up to 6 years of annual data.")
+    st.caption("ℹ️ Up to 6 years of annual data, with today's live price.")
 
     st.divider()
-    st.caption(f"Data source: {data_source}")
     st.caption("Thresholds are configurable in `ui/indicators.py`")
 
 # ---------------------------------------------------------------------------
@@ -155,14 +138,11 @@ if not st.session_state.tickers:
 all_data: dict[str, pd.DataFrame] = {}
 errors: list[str] = []
 
-with st.spinner(f"Fetching financial data from {data_source}..."):
+with st.spinner("Fetching financial data..."):
     for ticker_info in st.session_state.tickers:
         label = ticker_info["symbol"]  # Short label for charts
         try:
-            if data_source == "StockAnalysis.com":
-                raw = fetch_stockanalysis(ticker_info["slug"])
-            else:
-                raw = fetch_financials(ticker_info["yf_symbol"])
+            raw = fetch_combined(ticker_info["slug"], ticker_info["yf_symbol"])
             metrics_df = compute_all_metrics(raw, years=years)
 
             if metrics_df.empty:
@@ -181,62 +161,96 @@ if not all_data:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Charts – 2×3 grid
+# Charts – 1 full-width + 3×3 grid
 # ---------------------------------------------------------------------------
 
-charts = build_all_charts(all_data)
+# Chart ticker filter – let user choose which tickers to show in charts
+all_symbols = list(all_data.keys())
 
-def _render_chart_cell(metric_key: str, charts: dict, all_data: dict):
-    """Render a single chart cell: title + info popover, badges, chart."""
-    t = THRESHOLDS[metric_key]
-    # Title with compact info popover on the same line
-    title_col, info_col = st.columns([8, 1], gap="small")
-    with title_col:
-        st.markdown(f"**{t['label']} ({t['unit'] or '-'})**")
-    with info_col:
-        with st.popover("ℹ️"):
-            st.markdown(METRIC_FORMULAS.get(metric_key, "_No description available._"))
-    # Badges
-    badges = []
-    for symbol, df in all_data.items():
-        if metric_key in df.columns and not df[metric_key].dropna().empty:
-            latest = df[metric_key].dropna().iloc[-1]
-            badges.append(badge_html(metric_key, symbol, latest))
-    if badges:
-        st.markdown(" &nbsp; ".join(badges))
-    # Chart
-    st.plotly_chart(charts[metric_key], key=f"chart_{metric_key}", width="stretch")
+# Auto-update selection when tickers are added/removed
+if "chart_filter" not in st.session_state:
+    st.session_state.chart_filter = all_symbols[:8]
+else:
+    # Add any new tickers not yet in the filter (up to 8 shown by default)
+    current = st.session_state.chart_filter
+    for sym in all_symbols:
+        if sym not in current and len(current) < 8:
+            current.append(sym)
+    # Remove tickers that no longer exist
+    st.session_state.chart_filter = [s for s in current if s in all_symbols]
 
+chart_filter = st.multiselect(
+    "Show in charts:",
+    options=all_symbols,
+    key="chart_filter",
+)
 
-# Row 1 (metrics 1-3)
-row1_cols = st.columns(3)
-for i, metric_key in enumerate(METRIC_ORDER[:3]):
-    with row1_cols[i]:
-        _render_chart_cell(metric_key, charts, all_data)
+# Filter data for charts (scorecard always shows all)
+chart_data = {s: df for s, df in all_data.items() if s in chart_filter}
 
-# Row 2 (metrics 4-6)
-row2_cols = st.columns(3)
-for i, metric_key in enumerate(METRIC_ORDER[3:6]):
-    with row2_cols[i]:
-        _render_chart_cell(metric_key, charts, all_data)
+if chart_data:
+    charts = build_all_charts(chart_data)
 
-# Row 3 (DCF Margin of Safety – full width)
-if "dcf_mos" in METRIC_ORDER:
+    def _render_chart_cell(metric_key: str, charts: dict, data: dict):
+        """Render a single chart cell: title + info popover, badges, chart."""
+        t = THRESHOLDS[metric_key]
+        # Title with compact info popover on the same line
+        title_col, info_col = st.columns([8, 1], gap="small")
+        with title_col:
+            st.markdown(f"**{t['label']} ({t['unit'] or '-'})**")
+        with info_col:
+            with st.popover("ℹ️"):
+                st.markdown(METRIC_FORMULAS.get(metric_key, "_No description available._"))
+        # Badges (skip for stock_price — no rating)
+        if metric_key not in SCORECARD_EXCLUDE:
+            badges = []
+            for symbol, df in data.items():
+                if metric_key in df.columns and not df[metric_key].dropna().empty:
+                    latest = df[metric_key].dropna().iloc[-1]
+                    badges.append(badge_html(metric_key, symbol, latest))
+            if badges:
+                st.markdown(" &nbsp; ".join(badges))
+        # Chart
+        st.plotly_chart(charts[metric_key], key=f"chart_{metric_key}", width="stretch")
+
+    # Row 1: Stock Price (full width)
     st.divider()
-    _render_chart_cell("dcf_mos", charts, all_data)
+    _render_chart_cell("stock_price", charts, chart_data)
+
+    # Row 2: Gross Margin, ROCE, LT Debt/FCF
+    st.divider()
+    row2_cols = st.columns(3)
+    for i, key in enumerate(["gross_margin", "roce", "ltd_fcf"]):
+        with row2_cols[i]:
+            _render_chart_cell(key, charts, chart_data)
+
+    # Row 3: Revenue Growth, FCF Growth, PE Ratio
+    row3_cols = st.columns(3)
+    for i, key in enumerate(["revenue_growth", "fcf_growth", "pe_ratio"]):
+        with row3_cols[i]:
+            _render_chart_cell(key, charts, chart_data)
+
+    # Row 4: PEG Ratio, DCF MoS, Implied Growth
+    row4_cols = st.columns(3)
+    for i, key in enumerate(["peg_ratio", "dcf_mos", "implied_growth"]):
+        with row4_cols[i]:
+            _render_chart_cell(key, charts, chart_data)
+else:
+    st.info("Select at least one ticker in the chart filter above.")
 
 # ---------------------------------------------------------------------------
-# Summary Scorecard Table
+# Summary Scorecard Table (always shows ALL tickers)
 # ---------------------------------------------------------------------------
 
 st.divider()
 st.subheader("📊 Summary Scorecard")
 
 # Build scorecard data
+scorecard_metrics = [k for k in METRIC_ORDER if k not in SCORECARD_EXCLUDE]
 scorecard_data = []
 for symbol, df in all_data.items():
     row = {"Ticker": symbol}
-    for metric_key in METRIC_ORDER:
+    for metric_key in scorecard_metrics:
         label = THRESHOLDS[metric_key]["label"]
         if metric_key in df.columns and not df[metric_key].dropna().empty:
             latest = df[metric_key].dropna().iloc[-1]

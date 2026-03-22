@@ -1,13 +1,70 @@
 """
-fetcher.py – Raw financial data fetching via yfinance.
+fetcher.py – Raw financial data fetching.
 
-Fetches income statements, balance sheets, cash flow statements,
-price history, and ticker info for a given symbol.
+Combines StockAnalysis.com (financials/ratios) with yfinance (live price,
+price history, ticker info) to produce a unified data dict for metrics.py.
 """
 
 import pandas as pd
 import yfinance as yf
 import streamlit as st
+
+from data.scraper import fetch_stockanalysis, _scrape_live_price
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_combined(slug: str, yf_symbol: str) -> dict:
+    """
+    Fetch financial data from both sources and merge.
+
+    Uses StockAnalysis.com for ~6 years of financial statements and ratios,
+    and yfinance for live price, price history, and fiscal-year-end dates.
+
+    Returns a dict with keys:
+        - 'income', 'balance', 'cashflow', 'ratios': from StockAnalysis
+        - 'info': yfinance ticker info (contains currentPrice)
+        - 'history': yfinance 10-year monthly price history
+        - 'yf_income': yfinance income statement (for fiscal-year-end dates)
+        - 'symbol': display symbol
+        - 'source': 'combined'
+    """
+    # --- StockAnalysis: financials & ratios ---
+    sa_data = fetch_stockanalysis(slug)
+
+    # --- yfinance: live price, history, fiscal dates ---
+    ticker = yf.Ticker(yf_symbol)
+
+    try:
+        info = ticker.info or {}
+    except Exception:
+        info = {}
+
+    # If yfinance has no live price, fall back to SA scrape
+    if not info.get("currentPrice") and not info.get("regularMarketPrice"):
+        live = _scrape_live_price(slug)
+        if live:
+            info["currentPrice"] = live
+
+    history = ticker.history(period="10y", interval="1mo")
+
+    # yfinance income statement gives us exact fiscal-year-end dates
+    yf_income_raw = ticker.financials
+    if yf_income_raw is not None and not yf_income_raw.empty:
+        yf_income = yf_income_raw.T.sort_index()
+    else:
+        yf_income = pd.DataFrame()
+
+    return {
+        "income": sa_data["income"],
+        "balance": sa_data["balance"],
+        "cashflow": sa_data["cashflow"],
+        "ratios": sa_data.get("ratios", pd.DataFrame()),
+        "info": info,
+        "history": history,
+        "yf_income": yf_income,
+        "symbol": sa_data.get("symbol", yf_symbol.upper()),
+        "source": "combined",
+    }
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
