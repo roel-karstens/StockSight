@@ -9,7 +9,6 @@ import re
 import time
 import threading
 
-import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -58,11 +57,12 @@ def _parse_value(text: str) -> float:
         "0"        → 0.0
         ""         → NaN
     """
+    _NAN = float("nan")
     if not text:
-        return np.nan
+        return _NAN
     text = text.strip()
     if text in ("-", "—", "–", "N/A", "n/a", ""):
-        return np.nan
+        return _NAN
 
     # Remove percentage sign (we keep the numeric value, e.g., 68.59% → 68.59)
     text = text.replace("%", "")
@@ -75,7 +75,7 @@ def _parse_value(text: str) -> float:
     try:
         return float(text)
     except ValueError:
-        return np.nan
+        return _NAN
 
 
 # ---------------------------------------------------------------------------
