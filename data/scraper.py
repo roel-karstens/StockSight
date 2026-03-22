@@ -160,6 +160,31 @@ def _fetch_page(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Live price scraping
+# ---------------------------------------------------------------------------
+
+def _scrape_live_price(slug: str) -> float | None:
+    """Scrape the current live stock price from the main StockAnalysis page."""
+    if "/" in slug:
+        url = f"{BASE_URL}/quote/{slug}/"
+    else:
+        url = f"{BASE_URL}/stocks/{slug}/"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Price is in the first div with 'text-4xl' in its class
+        tag = soup.find("div", class_=re.compile(r"text-4xl"))
+        if tag:
+            match = re.search(r"[\d,]+\.\d+", tag.get_text(strip=True))
+            if match:
+                return float(match.group().replace(",", ""))
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # URL construction
 # ---------------------------------------------------------------------------
 
@@ -220,14 +245,19 @@ def fetch_stockanalysis(slug: str) -> dict:
     cashflow_df = _dict_to_dataframe(raw_tables["cashflow"])
     ratios_df = _dict_to_dataframe(raw_tables["ratios"])
 
-    # Extract some info-level fields from ratios for DCF
+    # Extract current price: prefer live scrape, fall back to most recent year
     info = {}
-    if "Last Close Price" in raw_tables.get("ratios", {}):
+    live_price = _scrape_live_price(slug)
+    time.sleep(REQUEST_DELAY)
+    if live_price:
+        info["currentPrice"] = live_price
+    elif "Last Close Price" in raw_tables.get("ratios", {}):
         prices = raw_tables["ratios"]["Last Close Price"]
-        # Get the most recent year's price
-        sorted_years = sorted(prices.keys(), reverse=True)
-        if sorted_years:
-            info["currentPrice"] = prices[sorted_years[0]]
+        # Filter to 4-digit year keys only (exclude "Period Ending", "TTM", etc.)
+        year_keys = [k for k in prices if re.match(r"^\d{4}$", k)]
+        if year_keys:
+            latest = sorted(year_keys, reverse=True)[0]
+            info["currentPrice"] = prices[latest]
 
     # Derive the display symbol from the slug
     display_symbol = slug.split("/")[-1].upper() if "/" in slug else slug.upper()

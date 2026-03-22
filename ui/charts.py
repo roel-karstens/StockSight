@@ -7,14 +7,83 @@ import pandas as pd
 
 from ui.indicators import THRESHOLDS, METRIC_ORDER, evaluate, rating_color
 
-# Consistent color palette for up to 5 tickers
+# Consistent color palette for up to 20 tickers
 TICKER_COLORS = [
     "#3b82f6",  # blue
     "#f97316",  # orange
     "#8b5cf6",  # purple
     "#06b6d4",  # cyan
     "#ec4899",  # pink
+    "#10b981",  # emerald
+    "#f59e0b",  # amber
+    "#ef4444",  # red
+    "#6366f1",  # indigo
+    "#14b8a6",  # teal
+    "#f472b6",  # rose
+    "#84cc16",  # lime
+    "#a855f7",  # violet
+    "#22d3ee",  # sky
+    "#fb923c",  # orange-light
+    "#4ade80",  # green-light
+    "#c084fc",  # purple-light
+    "#facc15",  # yellow
+    "#2dd4bf",  # teal-light
+    "#e879f9",  # fuchsia
 ]
+
+
+def build_stock_price_chart(
+    all_data: dict[str, pd.DataFrame],
+) -> go.Figure:
+    """
+    Build a stock price chart with a single shared Y-axis.
+
+    All tickers share one USD axis. Hover shows individual prices.
+    """
+    fig = go.Figure()
+
+    for i, (symbol, df) in enumerate(all_data.items()):
+        if "stock_price" not in df.columns:
+            continue
+
+        color = TICKER_COLORS[i % len(TICKER_COLORS)]
+        x_vals = df.index  # actual datetime values
+        values = df["stock_price"]
+        labels = df["year"]  # formatted date strings for hover
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=values,
+                mode="lines+markers",
+                name=symbol,
+                line=dict(color=color, width=2.5),
+                marker=dict(size=7),
+                customdata=labels,
+                hovertemplate=f"<b>{symbol}</b><br>"
+                + "Date: %{customdata}<br>"
+                + "Price: $%{y:.2f}"
+                + "<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        xaxis_title="Fiscal Year",
+        yaxis_title="Price ($)",
+        height=380,
+        margin=dict(l=60, r=60, t=30, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+        hovermode="x unified",
+        template="plotly_white",
+    )
+    return fig
 
 
 def build_metric_chart(
@@ -23,15 +92,9 @@ def build_metric_chart(
 ) -> go.Figure:
     """
     Build a single Plotly chart for a given metric across multiple tickers.
-
-    Args:
-        metric_key: one of METRIC_ORDER keys
-        all_data: dict of {symbol: metrics_df} from compute_all_metrics()
-
-    Returns:
-        A Plotly Figure
     """
     t = THRESHOLDS[metric_key]
+    has_thresholds = t["good"] is not None and t["bad"] is not None
     fig = go.Figure()
 
     all_years = set()
@@ -41,29 +104,29 @@ def build_metric_chart(
             continue
 
         color = TICKER_COLORS[i % len(TICKER_COLORS)]
-        years = df["year"]
+        x_vals = df.index  # actual datetime values
         values = df[metric_key]
-        all_years.update(years.tolist())
+        labels = df["year"]  # formatted date strings for hover
+        all_years.update(x_vals.tolist())
 
         fig.add_trace(
             go.Scatter(
-                x=years,
+                x=x_vals,
                 y=values,
                 mode="lines+markers",
                 name=symbol,
                 line=dict(color=color, width=2.5),
                 marker=dict(size=7),
+                customdata=labels,
                 hovertemplate=f"<b>{symbol}</b><br>"
-                + "Year: %{x}<br>"
+                + "Date: %{customdata}<br>"
                 + f"{t['label']}: %{{y:.2f}}{t['unit']}"
                 + "<extra></extra>",
             )
         )
 
-    # Add threshold reference lines (skip for dcf_mos — handled separately)
-    if all_years and metric_key != "dcf_mos":
-        sorted_years = sorted(all_years)
-
+    # Add threshold reference lines only for metrics that have them
+    if all_years and has_thresholds and metric_key != "dcf_mos":
         # Good threshold (green dashed)
         fig.add_hline(
             y=t["good"],
@@ -76,7 +139,6 @@ def build_metric_chart(
             annotation_font_color="#22c55e",
             annotation_font_size=10,
         )
-
         # Bad threshold (red dashed)
         fig.add_hline(
             y=t["bad"],
@@ -90,37 +152,21 @@ def build_metric_chart(
             annotation_font_size=10,
         )
     elif all_years and metric_key == "dcf_mos":
-        # DCF: show fair value line at 0%, and shaded regions
         fig.add_hline(
-            y=0,
-            line_dash="solid",
-            line_color="#6b7280",
-            line_width=1.5,
-            annotation_text="Fair Value",
-            annotation_position="top left",
-            annotation_font_color="#6b7280",
+            y=0, line_dash="solid", line_color="#6b7280", line_width=1.5,
+            annotation_text="Fair Value", annotation_position="top left",
+            annotation_font_color="#6b7280", annotation_font_size=10,
+        )
+        fig.add_hline(
+            y=t["good"], line_dash="dash", line_color="#22c55e", line_width=1,
+            opacity=0.5, annotation_text=f"Undervalued: +{t['good']}%",
+            annotation_position="top left", annotation_font_color="#22c55e",
             annotation_font_size=10,
         )
         fig.add_hline(
-            y=t["good"],
-            line_dash="dash",
-            line_color="#22c55e",
-            line_width=1,
-            opacity=0.5,
-            annotation_text=f"Undervalued: +{t['good']}%",
-            annotation_position="top left",
-            annotation_font_color="#22c55e",
-            annotation_font_size=10,
-        )
-        fig.add_hline(
-            y=t["bad"],
-            line_dash="dash",
-            line_color="#ef4444",
-            line_width=1,
-            opacity=0.5,
-            annotation_text=f"Overvalued: {t['bad']}%",
-            annotation_position="bottom left",
-            annotation_font_color="#ef4444",
+            y=t["bad"], line_dash="dash", line_color="#ef4444", line_width=1,
+            opacity=0.5, annotation_text=f"Overvalued: {t['bad']}%",
+            annotation_position="bottom left", annotation_font_color="#ef4444",
             annotation_font_size=10,
         )
 
@@ -145,5 +191,11 @@ def build_metric_chart(
 
 
 def build_all_charts(all_data: dict[str, pd.DataFrame]) -> dict[str, go.Figure]:
-    """Build all 6 metric charts. Returns dict of {metric_key: Figure}."""
-    return {key: build_metric_chart(key, all_data) for key in METRIC_ORDER}
+    """Build all metric charts. Returns dict of {metric_key: Figure}."""
+    charts = {}
+    for key in METRIC_ORDER:
+        if key == "stock_price":
+            charts[key] = build_stock_price_chart(all_data)
+        else:
+            charts[key] = build_metric_chart(key, all_data)
+    return charts
